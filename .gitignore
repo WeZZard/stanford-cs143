@@ -1,0 +1,4 @@
+*.o
+*.d
+assignments/PA2/lexer
+assignments/PA2/cool-lex.cc
