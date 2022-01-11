@@ -49,283 +49,384 @@ extern int verbose_flag;
 
 extern YYSTYPE cool_yylval;
 
-#ifndef max
-#define max(a,b)            (((a) > (b)) ? (a) : (b))
-#endif
+static int comment_layer = 0;
 
-#ifndef min
-#define min(a,b)            (((a) < (b)) ? (a) : (b))
-#endif
+enum class StringQuoteKind: uint8_t {
 
-typedef enum QuoteKind {
+None,
+Double,
+Single,
 
-QuoteKindNone,
-QuoteKindDoubleQuotedString,
-QuoteKindSingleQuotedString,
-QuoteKindMultilineComment,
+};
 
-} QuoteKind;
+StringQuoteKind stringQuoteKind { StringQuoteKind::None };
 
-static QuoteKind quoteKind = QuoteKindNone;
+static int end_string(const char * yytext, int yylength);
 
-static char * quotedContent = NULL;
-static size_t quotedContentCount = 0;
-static size_t quotedContentCapacity = 0;
+int end_string(const char * yytext, int yyleng) {
+  std::string input(yytext, yyleng);
 
-static void reallocateQuotedContentIfNeeded(size_t wantedCapacity);
-static void appendQuotedContent(const char * substring);
-static void clearQuotedContent();
+  // remove the '\"'s on both sizes.
+  input = input.substr(1, input.length() - 2);
 
-void appendQuotedContent(const char * substring) {
-  size_t substringLength = strlen(substring);
-  size_t wanted = quotedContentCount + substringLength + 1;
-  reallocateQuotedContentIfNeeded(wanted);
-  strcat(quotedContent, substring);
-  quotedContentCount += substringLength;
-}
-
-static void clearQuotedContent() {
-  free(quotedContent);
-  quotedContent = NULL;
-  quotedContentCount = 0;
-  quotedContentCapacity = 0;
-}
-
-void reallocateQuotedContentIfNeeded(size_t wantedCapacity) {
-  if (quotedContentCapacity > wantedCapacity) {
-    return;
+  std::string output = "";
+  std::string::size_type pos;
+  
+  if (input.find_first_of('\0') != std::string::npos) {
+      yylval.error_msg = "String contains null character";
+      BEGIN 0;
+      return ERROR;    
   }
 
-  size_t goodCapacity = max(quotedContentCapacity * 2, 1);
-  while (goodCapacity < wantedCapacity) {
-    goodCapacity *= 2;
+  while ((pos = input.find_first_of("\\")) != std::string::npos) {
+      output += input.substr(0, pos);
+
+      switch (input[pos + 1]) {
+      case 'b':
+          output += "\b";
+          break;
+      case 't':
+          output += "\t";
+          break;
+      case 'n':
+          output += "\n";
+          break;
+      case 'f':
+          output += "\f";
+          break;
+      default:
+          output += input[pos + 1];
+          break;
+      }
+
+      input = input.substr(pos + 2, input.length() - 2);
   }
 
-  if (quotedContent == NULL) {
-    quotedContent = (char *)malloc(goodCapacity);
-  } else {
-    quotedContent = (char *)realloc(quotedContent, goodCapacity);
+  output += input;
+
+  if (output.length() > 1024) {
+      yylval.error_msg = "String constant too long";
+      BEGIN 0;
+      return ERROR;    
   }
 
-  quotedContentCapacity = goodCapacity;
+  cool_yylval.symbol = stringtable.add_string((char*)output.c_str());
+  BEGIN 0;
+  return STR_CONST;
 }
-
-bool isInQuote(void) {
-  return quoteKind != QuoteKindNone;
-}
-
-size_t nestedQuoteLevel = 0;
 
 %}
 
+TRUE                    t(?i:rue)
+FALSE                   f(?i:alse)
+
 DIGIT                   [0-9]
-ID                      [A-Za-z_][A-Za-z0-9_]*
-LEFT_PAREN              \(
-RIGHT_PAREN             \)
-LEFT_BRACE              \{
-RIGHT_BRACE             \}
-SEMICOLON               ;
-COLON                   :
-COMMA                   ,
-MULTILINE_COMMENT_BEGIN \(\*
-MULTILINE_COMMENT_END   \*\)
-KEYWORDS                class|inherits|init|SELF_TYPE|self|if|then|else|fi|let|in|while|loop|pool|new
-OPERATORS               <-|\.|\+|\-|\*|\/|\<|\>|\[|\]|==|=|\\
+NEWLINE                 \r?\n
+
+%Start                  COMMENTS
+%Start                  INLINE_COMMENTS
+%Start                  STRING
 
 %%
 
-{DIGIT}+  {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("An integer: %s (%d)\n", yytext, atoi(yytext));
-  }
+ /* Nested comments */
+<INITIAL,COMMENTS,INLINE_COMMENTS>"(*" {
+    comment_layer++;
+    BEGIN COMMENTS;
 }
 
-{DIGIT}+"."{DIGIT}* {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("A float: %s (%g)\n", yytext, atof(yytext));
-  }
+<COMMENTS>[^\n(*]* { }
+
+<COMMENTS>[()*] { }
+
+<COMMENTS>"*)" {
+    comment_layer--;
+    if (comment_layer == 0) {
+        BEGIN 0;
+    }
 }
 
-{SEMICOLON} {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("Semicolon: %s\n", yytext);
-  }
+<COMMENTS><<EOF>> {
+    yylval.error_msg = "EOF in comment";
+    BEGIN 0;
+    return ERROR;
 }
 
-{COLON} {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("Colon: %s\n", yytext);
-  }
+"*)" {
+    yylval.error_msg = "Unmatched *)";
+    return ERROR;
 }
 
-{COMMA} {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("Comma: %s\n", yytext);
-  }
+ /* ===============
+  * inline comments
+  * ===============
+  */
+
+ /* if seen "--", start inline comment */
+<INITIAL>"--" { BEGIN INLINE_COMMENTS; }
+
+ /* any character other than '\n' is a nop in inline comments */ 
+<INLINE_COMMENTS>[^\n]* { }
+
+ /* if seen '\n' in inline comment, the comment ends */
+<INLINE_COMMENTS>\n {
+    curr_lineno++;
+    BEGIN 0;
 }
 
-{LEFT_PAREN} {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("Left parenthesis: %s\n", yytext);
-  }
+ /* ======
+  * String
+  * ======
+  */
+
+<INITIAL>\' {
+    BEGIN STRING;
+    yymore();
+    stringQuoteKind = StringQuoteKind::Single;
 }
 
-{RIGHT_PAREN} {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("Right parenthesis: %s\n", yytext);
-  }
+<INITIAL>\" {
+    BEGIN STRING;
+    yymore();
+    stringQuoteKind = StringQuoteKind::Double;
 }
 
-{LEFT_BRACE} {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("Left brace: %s\n", yytext);
-  }
-}
-
-{RIGHT_BRACE} {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("Right brace: %s\n", yytext);
-  }
-}
-
-{KEYWORDS} {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf( "A keyword: %s\n", yytext);
-  }
-}
-
-{ID} {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf( "An identifier: %s\n", yytext );
-  }
-}
-
-{OPERATORS} {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("An operator: %s\n", yytext);
-  }
-}
-
-[ \t]+ {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    printf("Whitespaces: \"%s\"\n", yytext);
-  }
-}
-
-(\n|\n\r)+ {
-  if (isInQuote()) {
-    appendQuotedContent(yytext);
-  } else {
-    /* Only supports UNIX and Windows newline */
-    printf("Newline: \"%s\"\n", yytext );
-  }
-}
-
-{MULTILINE_COMMENT_BEGIN} {
-  switch (quoteKind) {
-    case QuoteKindNone:
-      quoteKind = QuoteKindMultilineComment;
-      nestedQuoteLevel += 1;
+ /* string ends, we need to deal with some escape characters */
+<STRING>\" {
+  switch (stringQuoteKind) {
+    case StringQuoteKind::None:
+      // TODO: Error
       break;
-    case QuoteKindMultilineComment:
-      nestedQuoteLevel += 1;
-      appendQuotedContent(yytext);
+    case StringQuoteKind::Single:
+      yymore();
       break;
-    case QuoteKindSingleQuotedString:
-      appendQuotedContent(yytext);
-      break;
-    case QuoteKindDoubleQuotedString:
-      appendQuotedContent(yytext);
+    case StringQuoteKind::Double:
+      end_string(yytext, yyleng);
       break;
   }
 }
 
-{MULTILINE_COMMENT_END} {
-  switch (quoteKind) {
-    case QuoteKindNone:
-      // ERROR: Comment ended before start.
-      printf("Comment end: %s\n", yytext);
+<STRING>\' {
+  switch (stringQuoteKind) {
+    case StringQuoteKind::None:
+      // TODO: Error
       break;
-    case QuoteKindMultilineComment:
-      nestedQuoteLevel -= 1;
-      if (nestedQuoteLevel == 0) {
-        quoteKind = QuoteKindNone;
-        printf("Comment: \"(*%s*)\"\n", quotedContent);
-        clearQuotedContent();
-      }
+    case StringQuoteKind::Single:
+      end_string(yytext, yyleng);
       break;
-    case QuoteKindSingleQuotedString:
-      appendQuotedContent(yytext);
-      break;
-    case QuoteKindDoubleQuotedString:
-      appendQuotedContent(yytext);
+    case StringQuoteKind::Double:
+      yymore();
       break;
   }
 }
 
-"\"" {
-  switch (quoteKind) {
-    case QuoteKindNone:
-      quoteKind = QuoteKindDoubleQuotedString;
-      break;
-    case QuoteKindMultilineComment:
-      appendQuotedContent(yytext);
-      break;
-    case QuoteKindDoubleQuotedString:
-      quoteKind = QuoteKindNone;
-        printf("String Literal: \"%s\"\n", quotedContent);
-        clearQuotedContent();
-      break;
-    case QuoteKindSingleQuotedString:
-      appendQuotedContent(yytext);
-      break;
-  }
+ /* seen a '\\' at the end of a line, the string continues */
+<STRING>\\\n {
+    curr_lineno++;
+    yymore();
 }
 
-"\'" {
-  switch (quoteKind) {
-    case QuoteKindNone:
-      quoteKind = QuoteKindSingleQuotedString;
-      break;
-    case QuoteKindMultilineComment:
-      appendQuotedContent(yytext);
-      break;
-    case QuoteKindDoubleQuotedString:
-      appendQuotedContent(yytext);
-      break;
-    case QuoteKindSingleQuotedString:
-      quoteKind = QuoteKindNone;
-        printf("String Literal: \'%s\'\n", quotedContent);
-        clearQuotedContent();
-      break;
-  }
+ /* meet a "\\0" ??? */
+<STRING>\\0 {
+    yylval.error_msg = "Unterminated string constant";
+    BEGIN 0;
+    //curr_lineno++;
+    return ERROR;
 }
+
+ /* normal escape characters, not \n and not \0  */
+<STRING>\\[^\n] { yymore(); }
+
+ /* meet EOF in the middle of a string, error */
+<STRING><<EOF>> {
+    yylval.error_msg = "EOF in string constant";
+    BEGIN 0;
+    yyrestart(yyin);
+    return ERROR;
+}
+
+ /* meet a '\n' in the middle of a string without a '\\', error */
+<STRING>\n {
+    yylval.error_msg = "Unterminated string constant";
+    BEGIN 0;
+    curr_lineno++;
+    return ERROR;
+}
+
+ /* Cannot read '\\' '\"' '\n' */
+<STRING>[^\\\"\n]* { yymore(); }
+
+  /* ========
+   * KEYWORDS
+   * ========
+   */
+
+(?i:class) {
+  return CLASS;
+}
+
+(?i:else) {
+  return ELSE;
+}
+
+(?i:if) {
+  return IF;
+}
+
+(?i:fi) {
+  return FI;
+}
+
+(?i:in) {
+  return IN;
+}
+
+(?i:inherits) {
+  return INHERITS;
+}
+
+(?i:let) {
+  return LET;
+}
+
+(?i:loop) {
+  return LOOP;
+}
+
+(?i:pool) {
+  return POOL;
+}
+
+(?i:then) {
+  return THEN;
+}
+
+(?i:while) {
+  return WHILE;
+}
+
+(?i:case) {
+  return CASE;
+}
+
+(?i:esac) {
+  return ESAC;
+}
+
+(?i:of) {
+  return OF;
+}
+
+(?i:new) {
+  return NEW;
+}
+
+(?i:isvoid) {
+  return ISVOID;
+}
+
+(?i:n\o\t) {
+  return NOT;
+}
+
+  /* ========
+   * LITERALS
+   * ========
+   */
+
+{DIGIT}+ {
+  cool_yylval.symbol = inttable.add_string(yytext);
+  return INT_CONST;
+}
+
+{TRUE}  {
+  cool_yylval.boolean = 1;
+  return BOOL_CONST;
+}
+
+{FALSE}  {
+  cool_yylval.boolean = 0;
+  return BOOL_CONST;
+}
+
+  /* ===========
+   * IDENTIFIERS
+   * ===========
+   */
+
+[A-Z][A-Za-z0-9_]* {
+  cool_yylval.symbol = stringtable.add_string(yytext);
+  return TYPEID;
+}
+
+[a-z][A-Za-z0-9_]* {
+  cool_yylval.symbol = stringtable.add_string(yytext);
+  return OBJECTID;
+}
+
+  /* ========================
+   * NEWLINES AND WHITESPACES
+   * ========================
+   */
+
+[ \f\r\t\v]+ { }
+
+{NEWLINE} {
+  curr_lineno += 1;
+}
+
+  /* =========
+   * OPERATORS
+   * =========
+   */
+
+"=>" {
+  return DARROW;
+}
+
+"=" {
+  return ASSIGN;
+}
+
+"<=" {
+  return LE;
+}
+
+"+" { return int('+'); }
+
+"-" { return int('-'); }
+
+"*" { return int('*'); }
+
+"/" { return int('/'); }
+
+"<" { return int('<'); }
+
+">" { return int('>'); }
+
+"." { return int('.'); }
+
+";" { return int(';'); }
+
+"~" { return int('~'); }
+
+"{" { return int('{'); }
+
+"}" { return int('}'); }
+
+"(" { return int('('); }
+
+")" { return int(')'); }
+
+"[" { return int('['); }
+
+"]" { return int(']'); }
+
+":" { return int(':'); }
+
+"@" { return int('@'); }
+
+"," { return int(','); }
 
 . {
   printf("Unrecognized character: %s\n", yytext);

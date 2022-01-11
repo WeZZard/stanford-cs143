@@ -22,7 +22,8 @@ CPPINCLUDE= -I. -I${CLASSDIR}/include/PA${ASSN} -I${CLASSDIR}/src/PA${ASSN}
 FFLAGS= -d -ocool-lex.cc
 
 CC=g++
-CFLAGS= -g -Wall -Wno-unused -Wno-write-strings ${CPPINCLUDE}
+CFLAGS= -std=c11 -g -Wall -Wno-unused -Wno-write-strings ${CPPINCLUDE} 
+CPPFLAGS= -std=c++1z -g -Wall -Wno-unused -Wno-write-strings ${CPPINCLUDE}
 FLEX=flex ${FFLAGS}
 DEPEND = ${CC} -MM ${CPPINCLUDE}
 
@@ -36,10 +37,10 @@ ${OUTPUT}:	lexer test.cl
 	-./lexer test.cl >test.output 2>&1 
 
 lexer: ${OBJS}
-	${CC} ${CFLAGS} ${OBJS} ${LIB} -o lexer
+	${CC} ${CPPFLAGS} ${OBJS} ${LIB} -o lexer
 
 .cc.o:
-	${CC} ${CFLAGS} -c $<
+	${CC} ${CPPFLAGS} -c $<
 
 cool-lex.cc: cool.flex 
 	${FLEX} cool.flex
