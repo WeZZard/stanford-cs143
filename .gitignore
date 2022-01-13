@@ -2,3 +2,7 @@
 *.d
 assignments/PA2/lexer
 assignments/PA2/cool-lex.cc
+assignments/PA3/parser
+assignments/PA3/cool-parse.cc
+assignments/PA3/cool.tab.h
+assignments/PA3/cool.output
