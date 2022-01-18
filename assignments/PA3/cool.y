@@ -187,6 +187,9 @@
         stringtable.add_string(curr_filename)
       );
     }
+    | CLASS error '{' ft_list '}' ';' {
+      yyerrok;
+    }
     ;
 
     fm_list
@@ -220,13 +223,14 @@
     ft_list
     : { $$ = nil_Features(); }
     | ft_list ft ';' { $$ = append_Features($1, single_Features($2)); }
+    | ft_list error ';' { $$ = $1; yyerrok; }
     | ft ';' { $$ = single_Features($1); }
     ;
     
     expr_list
     : { $$ = nil_Expressions(); }
-    | expr_list ',' expr {
-      $$ = append_Expressions($1, single_Expressions($3));
+    | expr ',' expr_list {
+      $$ = append_Expressions(single_Expressions($1), $3);
     }
     | expr {
       $$ = single_Expressions($1);
@@ -245,6 +249,9 @@
     }
     | OBJECTID ':' TYPEID ASSIGN expr IN expr {
       $$ = let($1, $3, $5, $7);
+    }
+    | error binding_list {
+      yyerrok;
     }
     ;
 
