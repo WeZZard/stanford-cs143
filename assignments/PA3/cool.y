@@ -10,7 +10,10 @@
   #include "utilities.h"
   
   extern char *curr_filename;
-  
+
+  #include <stack>
+
+  static std::stack<Expression> binding_bodies;
   
   /* Locations */
   #define YYLTYPE int              /* the type of locations */
@@ -131,11 +134,19 @@
     
     /* Declare types for the grammar's non-terminals. */
     %type <program> program
-    %type <classes> class_list
-    %type <class_> class
+    %type <classes> cls_list
+    %type <class_> cls
     
     /* You will want to change the following line. */
-    %type <features> feature_list
+    %type <features> ft_list
+    %type <feature> ft
+    %type <expressions> expr_list
+    %type <expression> expr
+    %type <formals> fm_list
+    %type <formal> fm
+    %type <cases> cs_list
+    %type <case_> cs
+    %type <expression> binding_list
     
     /* Precedence declarations go here. */
     
@@ -144,31 +155,145 @@
     /* 
     Save the root of the abstract syntax tree in a global variable.
     */
-    program	: class_list	{ @$ = @1; ast_root = program($1); }
+    program	: cls_list	{ @$ = @1; ast_root = program($1); }
     ;
     
-    class_list
-    : class			/* single class */
-    { $$ = single_Classes($1);
-    parse_results = $$; }
-    | class_list class	/* several classes */
-    { $$ = append_Classes($1,single_Classes($2)); 
-    parse_results = $$; }
+    cls_list
+    : cls {
+      $$ = single_Classes($1);
+      parse_results = $$;
+    }
+    | cls_list cls {
+      $$ = append_Classes($1, single_Classes($2)); 
+      parse_results = $$;
+    }
     ;
     
     /* If no parent is specified, the class inherits from the Object class. */
-    class	: CLASS TYPEID '{' feature_list '}' ';'
-    { $$ = class_($2,idtable.add_string("Object"),$4,
-    stringtable.add_string(curr_filename)); }
-    | CLASS TYPEID INHERITS TYPEID '{' feature_list '}' ';'
-    { $$ = class_($2,$4,$6,stringtable.add_string(curr_filename)); }
+    cls
+    : CLASS TYPEID '{' ft_list '}' ';' { 
+      $$ = class_(
+        $2,
+        idtable.add_string("Object"),
+        $4,
+        stringtable.add_string(curr_filename)
+      );
+    }
+    | CLASS TYPEID INHERITS TYPEID '{' ft_list '}' ';' {
+      $$ = class_(
+        $2,
+        $4,
+        $6,
+        stringtable.add_string(curr_filename)
+      );
+    }
+    ;
+
+    fm_list
+    : { $$ = nil_Formals(); }
+    | fm_list ',' fm {
+      $$ = append_Formals($1, single_Formals($3));
+    }
+    | fm {
+      $$ = single_Formals($1);
+    }
+    ;
+
+    fm
+    : OBJECTID ':' TYPEID {
+      $$ = formal($1, $3);
+    };
+
+    ft
+    : OBJECTID '(' fm_list ')' ':' TYPEID '{' expr '}' {
+      $$ = method($1, $3, $6, $8);
+    }
+    | OBJECTID ':' TYPEID {
+      $$ = attr($1, $3, no_expr());
+    }
+    | OBJECTID ':' TYPEID ASSIGN expr {
+      $$ = attr($1, $3, $5);
+    }
     ;
     
     /* Feature list may be empty, but no empty features in list. */
-    feature_list
-    : {  $$ = nil_Features(); }
-    | OBJECTID ':' TYPEID ';'
+    ft_list
+    : { $$ = nil_Features(); }
+    | ft_list ft ';' { $$ = append_Features($1, single_Features($2)); }
+    | ft ';' { $$ = single_Features($1); }
+    ;
     
+    expr_list
+    : { $$ = nil_Expressions(); }
+    | expr_list ',' expr {
+      $$ = append_Expressions($1, single_Expressions($3));
+    }
+    | expr {
+      $$ = single_Expressions($1);
+    }
+    ;
+
+    binding_list
+    : OBJECTID ':' TYPEID ',' binding_list {
+      $$ = let($1, $3, no_expr(), $5);
+    }
+    | OBJECTID ':' TYPEID ASSIGN expr ',' binding_list {
+      $$ = let($1, $3, $5, $7);
+    }
+    | OBJECTID ':' TYPEID IN expr {
+      $$ = let($1, $3, no_expr(), $5);
+    }
+    | OBJECTID ':' TYPEID ASSIGN expr IN expr {
+      $$ = let($1, $3, $5, $7);
+    }
+    ;
+
+    cs
+    : OBJECTID ':' TYPEID DARROW expr ';' { $$ = branch($1, $3, $5); }
+
+    cs_list
+    : cs_list cs {
+      $$ = append_Cases($1, single_Cases($2));
+    }
+    | cs {
+      $$ = single_Cases($1);
+    }
+
+    expr
+    : OBJECTID ASSIGN expr {}
+    | expr '.' OBJECTID '(' expr_list ')' { 
+      $$ == dispatch($1, $3, $5);
+    }
+    | expr '@' TYPEID '.' OBJECTID '(' expr_list ')' { 
+      $$ == static_dispatch($1, $3, $5, $7);
+    }
+    | OBJECTID '(' expr_list ')' { 
+      $$ = dispatch(object(idtable.add_string("SELF")), $1, $3); 
+    }
+    | IF expr THEN expr ELSE expr FI { $$ = cond($2, $4, $6); }
+    | WHILE expr LOOP expr POOL { $$ = loop($2, $4); }
+    | '{' expr_list '}' { $$ = block($2); }
+    | LET binding_list {
+      $$ = $2;
+    }
+    | CASE expr OF cs_list ESAC { $$ = typcase($2, $4); }
+    | NEW TYPEID { $$ = new_($2); }
+    | ISVOID expr { $$ = isvoid($2); }
+    | expr '+' expr { $$ = plus($1, $3); }
+    | expr '-' expr { $$ = sub($1, $3); }
+    | expr '*' expr { $$ = mul($1, $3); }
+    | expr '/' expr { $$ = divide($1, $3); }
+    | '~' expr { $$ = neg($2); }
+    | expr '<' expr { $$ = lt($1, $3); }
+    | expr LE expr { $$ = leq($1, $3); }
+    | expr '=' expr { $$ = eq($1, $3); }
+    | NOT expr { $$ = eq($2, bool_const(false)); }
+    | '(' expr ')' { $$ = comp($2); }
+    | OBJECTID { $$ = object($1); }
+    | INT_CONST { $$ = int_const($1); }
+    | STR_CONST { $$ = string_const($1); }
+    | BOOL_CONST { $$ = bool_const($1); }
+    ;
     
     /* end of grammar */
     %%
