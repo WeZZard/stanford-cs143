@@ -384,7 +384,7 @@ NEWLINE                 \r?\n
   return DARROW;
 }
 
-"=" {
+"<-" {
   return ASSIGN;
 }
 
@@ -427,6 +427,8 @@ NEWLINE                 \r?\n
 "@" { return int('@'); }
 
 "," { return int(','); }
+
+"=" { return int('='); }
 
 . {
   printf("Unrecognized character: %s\n", yytext);
