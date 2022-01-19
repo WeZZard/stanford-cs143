@@ -6,3 +6,7 @@ assignments/PA3/parser
 assignments/PA3/cool-parse.cc
 assignments/PA3/cool.tab.h
 assignments/PA3/cool.output
+assignments/PA4/cgen
+assignments/PA4/lexer
+assignments/PA4/parser
+assignments/PA4/semant
